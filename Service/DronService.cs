@@ -13,7 +13,6 @@ namespace Service
         private static SessionMeta _currentMeta;
         private static bool _sessionActive = false;
 
-        // Threshold vrednosti učitane iz konfiguracije
         private readonly double W_THRESHOLD = double.Parse(ConfigurationManager.AppSettings["W_threshold"]);
         private readonly double A_THRESHOLD = double.Parse(ConfigurationManager.AppSettings["A_threshold"]);
 
@@ -87,7 +86,6 @@ namespace Service
                 avgW = _currentMeta.WindSpeed;
             }
 
-            // Provera odstupanja u odnosu na pragove
             bool windValid = IsWithinThreshold(sample.WindSpeed, avgW, W_THRESHOLD);
             bool accValid =
                 IsWithinThreshold(sample.LinearAccelerationX, avgAx, A_THRESHOLD) &&
@@ -125,7 +123,14 @@ namespace Service
                 };
             }
 
-            SaveSessionToDisk();
+            try
+            {
+                SaveSessionToDisk();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Došlo je do greške prilikom završetka sesije: " + ex.Message);
+            }
 
             _sessionActive = false;
             _currentSessionSamples.Clear();
@@ -137,6 +142,7 @@ namespace Service
                 Status = SessionStatus.COMPLETED
             };
         }
+
 
         private bool IsValidMeta(SessionMeta meta)
         {
@@ -190,15 +196,24 @@ namespace Service
             string fileName = $"Session_{DateTime.Now:yyyyMMdd_HHmmss}.txt";
             string filePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, fileName);
 
-            using (var writer = new StreamWriter(filePath))
+            try
             {
-                writer.WriteLine("LinearAccelerationX, LinearAccelerationY, LinearAccelerationZ, WindSpeed, WindAngle, Time");
-
-                foreach (var sample in _currentSessionSamples)
+                using (var fileHandler = new FileHandler(filePath))
                 {
-                    writer.WriteLine($"{sample.LinearAccelerationX}, {sample.LinearAccelerationY}, {sample.LinearAccelerationZ}, {sample.WindSpeed}, {sample.WindAngle}, {sample.Time:O}");
+                    fileHandler.WriteToFile("LinearAccelerationX, LinearAccelerationY, LinearAccelerationZ, WindSpeed, WindAngle, Time");
+
+                    foreach (var sample in _currentSessionSamples)
+                    {
+                        fileHandler.WriteToFile($"{sample.LinearAccelerationX}, {sample.LinearAccelerationY}, {sample.LinearAccelerationZ}, {sample.WindSpeed}, {sample.WindAngle}, {sample.Time:O}");
+                    }
+                    throw new Exception("Simulacija greške tokom zapisivanja sesije!");
                 }
             }
+            catch (Exception ex)
+            { 
+                Console.WriteLine($"Greška pri pisanju u fajl: {ex.Message}");
+            }
         }
+
     }
 }
