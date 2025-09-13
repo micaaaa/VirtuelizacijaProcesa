@@ -1,10 +1,5 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Runtime.Serialization;
-
 
 namespace Common
 {
@@ -15,12 +10,12 @@ namespace Common
         double linearAccelerationZ;
         double windSpeed;
         double windAngle;
-        DateTime time;
+        TimeSpan time;
 
-        public DroneSample() : this(0, 0, 0, 0, 0, new DateTime()) { }
+        public DroneSample() : this(0, 0, 0, 0, 0, TimeSpan.Zero) { }
 
         public DroneSample(double linearAccelerationX, double linearAccelerationY, double linearAccelerationZ,
-                           double windSpeed, double windAngle, DateTime time)
+                           double windSpeed, double windAngle, TimeSpan time)
         {
             this.linearAccelerationX = linearAccelerationX;
             this.linearAccelerationY = linearAccelerationY;
@@ -66,7 +61,7 @@ namespace Common
         }
 
         [DataMember]
-        public DateTime Time
+        public TimeSpan Time 
         {
             get => time;
             set => time = value;
@@ -75,7 +70,7 @@ namespace Common
         public override string ToString()
         {
             return $"LinearAccelerationX: {linearAccelerationX}, LinearAccelerationY: {linearAccelerationY}, " +
-                   $"LinearAccelerationZ: {linearAccelerationZ}, WindSpeed: {windSpeed}, WindAngle: {windAngle}, Time: {time}";
+                   $"LinearAccelerationZ: {linearAccelerationZ}, WindSpeed: {windSpeed}, WindAngle: {windAngle}, Time: {time.TotalSeconds}";  // Prikazujemo TotalSeconds
         }
     }
 }

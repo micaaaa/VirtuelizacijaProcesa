@@ -1,8 +1,9 @@
-﻿using System;
-using System.IO;
-using System.Linq;
+﻿using Common;
+using System;
 using System.Collections.Generic;
-using Common;
+using System.Globalization;
+using System.Linq;
+using System.ServiceModel;
 
 namespace Client
 {
@@ -12,28 +13,85 @@ namespace Client
         {
             try
             {
-                string filePath = Path.Combine(Directory.GetCurrentDirectory(), "Data", "6.csv");
+                string csvFilePath = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "6.csv");
 
-                if (!File.Exists(filePath))
+                if (!System.IO.File.Exists(csvFilePath))
                 {
-                    Console.WriteLine($"File not found: {filePath}");
+                    Console.WriteLine($"File not found: {csvFilePath}");
                     Console.ReadKey();
                     return;
                 }
 
-                var records = LoadCsvFile(filePath);
-
-                LogInvalidRows(records);
-
-                var first100ValidRows = records.Where(row => row.All(c => !string.IsNullOrEmpty(c) && !string.IsNullOrWhiteSpace(c))).Take(100).ToList();
-
-                Console.WriteLine("First 100 valid rows:");
-                foreach (var row in first100ValidRows)
+                List<List<string>> records;
+                using (var fileHandler = new FileHandler(csvFilePath))
                 {
-                    Console.WriteLine(string.Join(", ", row));
+                    string fileContent = fileHandler.ReadFromFile();
+                    records = ParseCsvContent(fileContent);
                 }
 
-                LogExcessRows(records, first100ValidRows);
+                var invalidRows = new List<string>();
+                var validSessionMeta = new List<SessionMeta>();
+
+                foreach (var row in records)
+                {
+                    var meta = MapToSessionMeta(row);
+                    if (meta == null || meta.Time.TotalSeconds <= 0)
+                    {
+                        invalidRows.Add(string.Join(",", row));
+                    }
+                    else
+                    {
+                        validSessionMeta.Add(meta);
+                    }
+                }
+
+                if (validSessionMeta.Count == 0)
+                {
+                    Console.WriteLine("No valid session metadata found in the CSV file.");
+                    Console.ReadKey();
+                    return;
+                }
+
+                var rowsToProcess = validSessionMeta.Take(100).ToList();
+                var extraRows = validSessionMeta.Skip(100)
+                                .Select(m => $"{m.Time.TotalSeconds},{m.WindSpeed},{m.WindAngle},{m.LinearAccelerationX},{m.LinearAccelerationY},{m.LinearAccelerationZ}")
+                                .ToList();
+
+                LogInvalidAndExtraRows(invalidRows, extraRows);
+
+                var initialMeta = rowsToProcess.First();
+
+                ChannelFactory<IDroneService> factory = new ChannelFactory<IDroneService>("DroneServiceEndpoint");
+                IDroneService proxy = factory.CreateChannel();
+
+                var sessionResponse = proxy.StartSession(initialMeta);
+
+                if (!sessionResponse.IsAck)
+                {
+                    Console.WriteLine($"Failed to start session. Status: {sessionResponse.Status}");
+                    Console.ReadKey();
+                    return;
+                }
+
+                Console.WriteLine("Session started successfully!");
+
+                foreach (var sessionMeta in rowsToProcess)
+                {
+                    Console.WriteLine($"{sessionMeta.Time.TotalSeconds},{sessionMeta.WindSpeed},{sessionMeta.WindAngle},{sessionMeta.LinearAccelerationX},{sessionMeta.LinearAccelerationY},{sessionMeta.LinearAccelerationZ}");
+                }
+
+                foreach (var sessionMeta in rowsToProcess)
+                {
+                    var sample = MapToDroneSample(sessionMeta);
+                    if (sample != null)
+                    {
+                        proxy.PushSample(sample);
+                    }
+                }
+
+                var endSessionResponse = proxy.EndSession();
+
+                ((IClientChannel)proxy).Close();
 
                 Console.WriteLine("Press any key to exit...");
                 Console.ReadKey();
@@ -45,64 +103,101 @@ namespace Client
             }
         }
 
-        static List<List<string>> LoadCsvFile(string filePath)
+        private static void LogInvalidAndExtraRows(List<string> invalidRows, List<string> extraRows)
+        {
+            string logFilePath = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "invalid_rows.log");
+
+            using (var logHandler = new FileHandler(logFilePath))
+            {
+                logHandler.DeleteAllContent();
+
+                logHandler.WriteToFile("=== Nevalidni redovi ===");
+                foreach (var line in invalidRows)
+                    logHandler.WriteToFile(line);
+
+                logHandler.WriteToFile(string.Empty);
+
+                logHandler.WriteToFile("=== Višak redovi preko 100 ===");
+                foreach (var line in extraRows)
+                    logHandler.WriteToFile(line);
+            }
+        }
+        static List<List<string>> ParseCsvContent(string content)
         {
             var rows = new List<List<string>>();
-            try
+            if (string.IsNullOrEmpty(content)) return rows;
+
+            var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).ToList();
+
+            if (lines.Count <= 1) return rows;
+
+            var dataLines = lines.Skip(1);
+
+            foreach (var line in dataLines)
             {
-                using (var reader = new StreamReader(filePath))
-                {
-                    string line;
-                    while ((line = reader.ReadLine()) != null)
-                    {
-                        var row = line.Split(',').Select(value => value.Trim()).ToList();
-                        rows.Add(row);
-                    }
-                }
+                var row = line.Split(',').Select(v => v.Trim()).ToList();
+                rows.Add(row);
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error reading CSV file: {ex.Message}");
-            }
+
             return rows;
         }
-        //Nevalidni
-        static void LogInvalidRows(List<List<string>> records)
+
+        static SessionMeta MapToSessionMeta(List<string> row)
         {
-            string logFilePath = Path.Combine(Directory.GetCurrentDirectory(), "log.txt");
-            int expectedColumnCount = 21;  
-
-            using (var writer = new StreamWriter(logFilePath, append: true))
+            if (row.Count >= 20)
             {
-                foreach (var record in records)
+                try
                 {
-                    bool isValid = record.Count == expectedColumnCount &&
-                                   record.All(c => !string.IsNullOrEmpty(c) && !string.IsNullOrWhiteSpace(c)); 
+                    if (!TryParseDouble(row[0], out double timeInSeconds) || timeInSeconds <= 0)
+                        return null;
 
-                    if (!isValid)
+                    if (!TryParseDouble(row[1], out double windSpeed) ||
+                        !TryParseDouble(row[2], out double windAngle) ||
+                        !TryParseDouble(row[17], out double accX) ||
+                        !TryParseDouble(row[18], out double accY) ||
+                        !TryParseDouble(row[19], out double accZ))
+                        return null;
+
+                    return new SessionMeta
                     {
-                        var validationFault = new ValidationFault($"Invalid row: {string.Join(", ", record)}");
-                        writer.WriteLine($"{validationFault.Message}");
-                    }
+                        Time = TimeSpan.FromSeconds(timeInSeconds),
+                        WindSpeed = windSpeed,
+                        WindAngle = windAngle,
+                        LinearAccelerationX = accX,
+                        LinearAccelerationY = accY,
+                        LinearAccelerationZ = accZ
+                    };
+                }
+                catch
+                {
+                    return null;
                 }
             }
+            return null;
         }
 
-        //Viska
-        static void LogExcessRows(List<List<string>> allRows, List<List<string>> first100Rows)
+        static DroneSample MapToDroneSample(SessionMeta sessionMeta)
         {
-            var excessRows = allRows.Where(row => !first100Rows.Contains(row)).ToList();
-            if (excessRows.Any())
+            return new DroneSample
             {
-                string logFilePath = Path.Combine(Directory.GetCurrentDirectory(), "excess_log.txt");
-                using (var writer = new StreamWriter(logFilePath, append: true))
-                {
-                    foreach (var row in excessRows)
-                    {
-                        writer.WriteLine($"Excess row: {string.Join(", ", row)}");
-                    }
-                }
-            }
+                LinearAccelerationX = sessionMeta.LinearAccelerationX,
+                LinearAccelerationY = sessionMeta.LinearAccelerationY,
+                LinearAccelerationZ = sessionMeta.LinearAccelerationZ,
+                WindSpeed = sessionMeta.WindSpeed,
+                WindAngle = sessionMeta.WindAngle,
+                Time = sessionMeta.Time
+            };
+        }
+
+        static bool TryParseDouble(string s, out double result)
+        {
+            if (double.TryParse(s, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out result))
+                return true;
+            if (double.TryParse(s, System.Globalization.NumberStyles.Any, new CultureInfo("fr-FR"), out result))
+                return true;
+
+            result = 0;
+            return false;
         }
     }
 }

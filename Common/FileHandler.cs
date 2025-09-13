@@ -5,23 +5,21 @@ namespace Common
 {
     public class FileHandler : IDisposable
     {
-        private FileStream fileStream;
-        private StreamWriter writer;
+        private TextWriter textWriter;
+        private TextReader textReader;
         private bool disposed = false;
+        private string path;
+
+        public string Path { get => path; }
 
         public FileHandler(string filePath)
         {
-            fileStream = new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.Write);
-            writer = new StreamWriter(fileStream);
+            path = filePath;
         }
 
-        public void WriteToFile(string content)
+        ~FileHandler()
         {
-            if (disposed)
-                throw new ObjectDisposedException("FileHandler");
-
-            writer.WriteLine(content);
-            writer.Flush();
+            Dispose(false);
         }
 
         public void Dispose()
@@ -32,21 +30,47 @@ namespace Common
 
         protected virtual void Dispose(bool disposing)
         {
-            if (disposed)
-                return;
-
-            if (disposing)
+            if (!disposed)
             {
-                writer?.Dispose();
-                fileStream?.Dispose();
-            }
+                if (disposing)
+                {
+                    textWriter?.Dispose();
+                    textReader?.Dispose();
+                }
 
-            disposed = true;
+                disposed = true;
+            }
         }
 
-        ~FileHandler()
+        public void WriteToFile(string content)
         {
-            Dispose(false);
+            if (textWriter == null)
+            {
+                textWriter = File.AppendText(path);
+            }
+
+            textWriter.WriteLine(content);
+            textWriter.Flush();
+            textWriter.Close();
+            textWriter = null;
+        }
+
+        public string ReadFromFile()
+        {
+            if (textReader == null)
+            {
+                textReader = File.OpenText(path);
+            }
+
+            string content = textReader.ReadToEnd();
+            textReader.Close();
+            textReader = null;
+            return content;
+        }
+
+        public void DeleteAllContent()
+        {
+            File.WriteAllText(path, string.Empty);
         }
     }
 }

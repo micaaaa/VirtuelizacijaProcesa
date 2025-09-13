@@ -2,8 +2,6 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.Serialization;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Common
 {
@@ -26,6 +24,11 @@ namespace Common
         public double WindAngle { get; set; }
 
         [DataMember]
-        public DateTime Time { get; set; }
+        public TimeSpan Time { get; set; } 
+
+        public override string ToString()
+        {
+            return $"{Time.TotalSeconds},{WindSpeed}, {WindAngle}, {LinearAccelerationX}, {LinearAccelerationY}, {LinearAccelerationZ}";
+        }
     }
 }
