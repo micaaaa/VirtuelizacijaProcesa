@@ -9,23 +9,23 @@ namespace Common
     public class SessionMeta
     {
         [DataMember]
-        public double LinearAccelerationX { get; set; }
+        public string LinearAccelerationX { get; set; } = "LinearAccelerationX";
 
         [DataMember]
-        public double LinearAccelerationY { get; set; }
+        public string LinearAccelerationY { get; set; } = "LinearAccelerationY";
 
         [DataMember]
-        public double LinearAccelerationZ { get; set; }
+        public string LinearAccelerationZ { get; set; } = "LinearAccelerationZ";
 
         [DataMember]
-        public double WindSpeed { get; set; }
+        public string WindSpeed { get; set; } = "WindSpeed";
 
         [DataMember]
-        public double WindAngle { get; set; }
+        public string WindAngle { get; set; } = "WindAngle";
 
         [DataMember]
-        public string Time { get; set; } 
+        public string Time { get; set; } = "Time";
 
-       
+
     }
 }

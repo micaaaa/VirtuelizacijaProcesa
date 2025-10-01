@@ -46,7 +46,6 @@
     <Compile Include="DataFormatFault.cs" />
     <Compile Include="DroneSample.cs" />
     <Compile Include="EventsDrone.cs" />
-    <Compile Include="FileHandler.cs" />
     <Compile Include="IDroneService.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="ServiceResponse.cs" />

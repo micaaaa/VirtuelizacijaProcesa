@@ -56,9 +56,10 @@ namespace Service
                 measurementsWriter = new StreamWriter("drone_measurements_session.csv");
                 rejectsWriter = new StreamWriter("drone_rejects.csv");
 
-                string header = "LinearAccelerationX,LinearAccelerationY,LinearAccelerationZ,WindSpeed,WindAngle,Time";
+                string header = $"{meta.LinearAccelerationX},{meta.LinearAccelerationY},{meta.LinearAccelerationZ},{meta.WindSpeed},{meta.WindAngle},{meta.Time}";
+                string headerRejact = $"{meta.LinearAccelerationX},{meta.LinearAccelerationY},{meta.LinearAccelerationZ},{meta.WindSpeed},{meta.WindAngle},{meta.Time}";
                 measurementsWriter.WriteLine(header);
-                rejectsWriter.WriteLine(header + ",ReasonReject");
+                rejectsWriter.WriteLine(headerRejact + ",ReasonReject");
 
                 measurementsWriter.Flush();
                 rejectsWriter.Flush();
@@ -162,9 +163,12 @@ namespace Service
                         new DataFormatFault { Message = "Sesija nije aktivna", Field = "Session" },
                         new FaultReason("Sesija nije aktivna"));
 
+
                 ValidateDroneSample(sample);
 
                 Console.WriteLine("[INFO] Prenos je u toku...");
+                measurementsWriter.WriteLine($"{sample.LinearAccelerationX},{sample.LinearAccelerationY},{sample.LinearAccelerationZ},{sample.WindSpeed},{sample.WindAngle},{sample.Time}");
+                measurementsWriter.Flush();
 
                 ReceiveSample(sample);
 
