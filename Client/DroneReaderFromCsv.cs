@@ -39,13 +39,13 @@ namespace Client
             // Relevantne kolone za DroneSample (mora biti u istom redosledu kao u zaglavlju log fajla)
             var relevantHeaders = new[]
             {
-                "time",
-                "wind_speed",
-                "wind_angle",
-                "linear_acceleration_x",
-                "linear_acceleration_y",
-                "linear_acceleration_z"
-            };
+        "time",
+        "wind_speed",
+        "wind_angle",
+        "linear_acceleration_x",
+        "linear_acceleration_y",
+        "linear_acceleration_z"
+    };
 
             // Mapa zaglavlja na indeks
             var headerMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -83,22 +83,57 @@ namespace Client
                         switch (header)
                         {
                             case "time":
-                                sample.Time = value;
+                                if (double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out double parsedTime))
+                                {
+                                    sample.Time = parsedTime;  // Spasi sekunde kao double
+                                }
+                                else
+                                {
+                                    Console.WriteLine($"[WARNING] Invalid time value: {value}");
+                                    continue; // Skip invalid entry
+                                }
                                 break;
+
+
                             case "wind_speed":
-                                sample.WindSpeed = double.Parse(value, CultureInfo.InvariantCulture);
+                                if (!double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out double windSpeed))
+                                {
+                                    Console.WriteLine($"[WARNING] Invalid wind_speed value: {value}");
+                                    continue; // Skip invalid entry
+                                }
+                                sample.WindSpeed = windSpeed;
                                 break;
                             case "wind_angle":
-                                sample.WindAngle = double.Parse(value, CultureInfo.InvariantCulture);
+                                if (!double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out double windAngle))
+                                {
+                                    Console.WriteLine($"[WARNING] Invalid wind_angle value: {value}");
+                                    continue; // Skip invalid entry
+                                }
+                                sample.WindAngle = windAngle;
                                 break;
                             case "linear_acceleration_x":
-                                sample.LinearAccelerationX = double.Parse(value, CultureInfo.InvariantCulture);
+                                if (!double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out double accX))
+                                {
+                                    Console.WriteLine($"[WARNING] Invalid linear_acceleration_x value: {value}");
+                                    continue; // Skip invalid entry
+                                }
+                                sample.LinearAccelerationX = accX;
                                 break;
                             case "linear_acceleration_y":
-                                sample.LinearAccelerationY = double.Parse(value, CultureInfo.InvariantCulture);
+                                if (!double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out double accY))
+                                {
+                                    Console.WriteLine($"[WARNING] Invalid linear_acceleration_y value: {value}");
+                                    continue; // Skip invalid entry
+                                }
+                                sample.LinearAccelerationY = accY;
                                 break;
                             case "linear_acceleration_z":
-                                sample.LinearAccelerationZ = double.Parse(value, CultureInfo.InvariantCulture);
+                                if (!double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out double accZ))
+                                {
+                                    Console.WriteLine($"[WARNING] Invalid linear_acceleration_z value: {value}");
+                                    continue; // Skip invalid entry
+                                }
+                                sample.LinearAccelerationZ = accZ;
                                 break;
                         }
                     }
@@ -106,10 +141,11 @@ namespace Client
                     samples.Add(sample);
                     rowCount++;
                 }
-                catch
+                catch (Exception ex)
                 {
                     // U slučaju greške, upiši samo relevantne kolone u log
                     invalidRows.Add(FilterRelevantColumns(line, headerMap, relevantHeaders));
+                    Console.WriteLine($"[ERROR] Failed to parse row: {ex.Message}");
                 }
             }
 
@@ -121,6 +157,7 @@ namespace Client
 
             return samples;
         }
+
 
         // Metoda za izdvajanje samo relevantnih kolona iz reda CSV fajla
         private string FilterRelevantColumns(string line, Dictionary<string, int> headerMap, string[] relevantHeaders)

@@ -22,9 +22,7 @@ namespace Service
         // Handler metode
         private void HandleTransferStarted(object sender, TransferEventArgs e)
         {
-            Console.ForegroundColor = ConsoleColor.Magenta;
             Console.WriteLine($"[START] {e.Message}");
-            Console.ResetColor();
             Console.WriteLine();
         }
 
@@ -46,9 +44,7 @@ namespace Service
 
         private void HandleTransferCompleted(object sender, TransferEventArgs e)
         {
-            Console.ForegroundColor = ConsoleColor.Magenta;
             Console.WriteLine($"[END] {e.Message}");
-            Console.ResetColor();
             Console.WriteLine();
         }
 

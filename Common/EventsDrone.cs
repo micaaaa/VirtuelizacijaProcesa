@@ -34,7 +34,7 @@ namespace Common
         public double WindAngle { get; private set; }
 
         [DataMember]
-        public string Time { get; private set; }
+        public double Time { get; private set; }
 
         public SampleEventArgs(
             double linearAccelerationX,
@@ -42,7 +42,7 @@ namespace Common
             double linearAccelerationZ,
             double windSpeed,
             double windAngle,
-            string time)
+            double time)
         {
             LinearAccelerationX = linearAccelerationX;
             LinearAccelerationY = linearAccelerationY;

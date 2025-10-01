@@ -21,6 +21,6 @@ namespace Common
         public double WindAngle { get; set; }
 
         [DataMember]
-        public string Time { get; set; }
+        public double Time { get; set; }
     }
 }

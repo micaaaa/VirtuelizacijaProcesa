@@ -99,11 +99,11 @@ namespace Service
             OnSampleReceived?.Invoke(this, new SampleEventArgs(sample));
 
             // --- Analitika 1: Detekcija nagle promene ubrzanja (ΔA) ---
-            // Izračunavanje norme ubrzanja (Anorm)
             double Anorm = Math.Sqrt(
                 sample.LinearAccelerationX * sample.LinearAccelerationX +
                 sample.LinearAccelerationY * sample.LinearAccelerationY +
                 sample.LinearAccelerationZ * sample.LinearAccelerationZ);
+
 
             if (previousSample != null)
             {
@@ -118,11 +118,10 @@ namespace Service
                 {
                     string direction = deltaA > 0 ? "iznad očekivanog" : "ispod očekivanog";
                     OnWarningRaised?.Invoke(this, new WarningEventArgs($"[Acceleration Spike]: ΔA={deltaA:F2}, smer: {direction}"));
-               
                 }
             }
 
-           
+            // Računamo prosek ubrzanja
             accelerationNormSamples.Add(Anorm);
             double Amean = accelerationNormSamples.Average();
 
@@ -135,24 +134,24 @@ namespace Service
                 OnWarningRaised?.Invoke(this, new WarningEventArgs($"[Out Of Bound Warning]: A={Anorm:F2}, Amean={Amean:F2}, smer: {direction}"));
             }
 
-     
             double windAngleRad = sample.WindAngle * (Math.PI / 180.0);
             double Weffect = Math.Abs(sample.WindSpeed * Math.Sin(windAngleRad));
 
             if (Weffect > W_threshold)
             {
-                string direction = Weffect > W_threshold ? "iznad očekivanog" : "ispod očekivanog"; 
-                OnWarningRaised?.Invoke(this, new WarningEventArgs($"[Wind Spike]: Weffect={Weffect:F2}, smer: {direction}"));
-                // Možeš napraviti poseban događaj OnWindSpike ako želiš    }
+                string direction = Weffect > W_threshold ? "iznad očekivanog" : "ispod očekivanog";
+                OnWarningRaised?.Invoke(this, new WarningEventArgs($"[Wind Spike]: Weffect={Weffect}, smer: {direction}"));
+            }
 
-        
-            previousSample = sample;
-
-           
-            measurementsWriter.WriteLine($"{sample.LinearAccelerationX},{sample.LinearAccelerationY},{sample.LinearAccelerationZ},{sample.WindSpeed},{sample.WindAngle},{sample.Time}");
-            measurementsWriter.Flush();
+            // Čuvanje prethodnog uzorka
+            previousSample = new DroneSample { 
+            LinearAccelerationX = sample.LinearAccelerationX,
+            LinearAccelerationY = sample.LinearAccelerationY,
+            LinearAccelerationZ = sample.LinearAccelerationZ,
+            WindAngle = sample.WindAngle,
+            WindSpeed = sample.WindSpeed,
+            Time = sample.Time};
         }
-
 
         public ServiceResponse PushSample(DroneSample sample)
         {
@@ -180,7 +179,6 @@ namespace Service
             }
             catch (FaultException<ValidationFault> ex)
             {
-                WriteRejectSample(sample, ex.Detail.Message);
                 return new ServiceResponse
                 {
                     ServiceType = ServiceType.NACK,
@@ -190,7 +188,6 @@ namespace Service
             }
             catch (FaultException<DataFormatFault> ex)
             {
-                WriteRejectSample(sample, ex.Detail.Message);
                 return new ServiceResponse
                 {
                     ServiceType = ServiceType.NACK,
@@ -251,23 +248,29 @@ namespace Service
             if (sample == null)
                 ThrowValidationAndLog(null, "Sample objekat je null");
 
+            // Proverava numeričke vrednosti
             CheckFinite("LinearAccelerationX", sample.LinearAccelerationX, sample);
             CheckFinite("LinearAccelerationY", sample.LinearAccelerationY, sample);
             CheckFinite("LinearAccelerationZ", sample.LinearAccelerationZ, sample);
             CheckFinite("WindSpeed", sample.WindSpeed, sample);
             CheckFinite("WindAngle", sample.WindAngle, sample);
+            CheckFinite("Time", sample.Time, sample);  // Provera Time-a kao numeričkog tipa
+
+            if (sample.LinearAccelerationX < -1 || sample.LinearAccelerationX > 1)
+                ThrowValidationAndLog(sample, "LinearAccelerationX mora biti u opsegu ((-1) - 1)");
+            if (sample.LinearAccelerationY < -1 || sample.LinearAccelerationY > 1)
+                ThrowValidationAndLog(sample, "LinearAccelerationY mora biti u opsegu ((-1) - 1)");
+            if (sample.LinearAccelerationZ < -12 || sample.LinearAccelerationZ > 15)
+                ThrowValidationAndLog(sample, "LinearAccelerationZ mora biti u opsegu ((-12) - 15)");
 
             if (sample.WindSpeed <= 0)
                 ThrowValidationAndLog(sample, "WindSpeed mora biti veći od 0");
 
-            if (sample.WindAngle < 0 || sample.WindAngle > 360)
-                ThrowValidationAndLog(sample, "WindAngle mora biti u opsegu 0-360");
+            if (sample.WindAngle < 150 || sample.WindAngle > 360)
+                ThrowValidationAndLog(sample, "WindAngle mora biti u opsegu 150-360");
 
-            if (string.IsNullOrWhiteSpace(sample.Time))
-                ThrowValidationAndLog(sample, "Time nije postavljen");
-
-            if (!DateTime.TryParse(sample.Time, CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
-                ThrowValidationAndLog(sample, "Time nije validan format");
+            if (sample.Time < 0 || sample.Time > 100) 
+                ThrowValidationAndLog(sample, "Time mora biti unutar dozvoljenog opsega (0-100 sekundi)");
         }
 
         private void CheckFinite(string fieldName, double value, DroneSample sample)

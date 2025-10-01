@@ -22,11 +22,9 @@ namespace DroneServer
             try
             {
                 host.Open();
-                Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine("DroneService je pokrenut na net.tcp://localhost:5000/DroneService");
                 Console.WriteLine("Pritisnite neki taster za zatvaranje servisa...");
                 Console.ReadKey();
-                Console.ResetColor();
             }
             catch (Exception ex)
             {

@@ -24,9 +24,6 @@ namespace Client
                 var filePath = Path.Combine(exeDir, fileName);
                 var maxRows = Int32.Parse(ConfigurationManager.AppSettings["maxRows"]);
 
-                Console.WriteLine($"Putanja do fajla: {filePath}");
-                Console.WriteLine($"Maksimalno redova za učitavanje: {maxRows}");
-
                 if (!File.Exists(filePath))
                 {
                     Console.WriteLine($"Fajl nije pronađen: {filePath}");
@@ -112,7 +109,6 @@ namespace Client
 
                 if (endResponse.ServiceType == ServiceType.ACK)
                 {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
                     Console.WriteLine("[KRAJ] Sesija je zatvorena");
                 }
                 else
