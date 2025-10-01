@@ -10,11 +10,12 @@ namespace Common
     [DataContract]
     public class ServiceResponse
     {
-            [DataMember]
-            public bool IsAck { get; set; } 
+        [DataMember]
+        public ServiceType ServiceType { get; set; }
+        [DataMember]
+        public string Message { get; set; }
 
-            [DataMember]
-            public SessionStatus Status { get; set; } 
-       
+        [DataMember]
+        public SessionStatus ServiceStatus { get; set; }
     }
 }

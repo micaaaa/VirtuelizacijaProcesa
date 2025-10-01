@@ -1,223 +1,337 @@
-﻿using System;
+﻿using Common;
+using System;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.ServiceModel;
-using Common;
 
 namespace Service
 {
-    public class DroneService : IDroneService
+    [ServiceBehavior(InstanceContextMode = InstanceContextMode.Single)]
+    public class DroneService : IDroneService, IDisposable
     {
-        private static List<DroneSample> _currentSessionSamples = new List<DroneSample>();
-        private static SessionMeta _currentMeta;
-        private static bool _sessionActive = false;
+        private StreamWriter measurementsWriter;
+        private StreamWriter rejectsWriter;
+        private bool sessionActive = false;
+        private bool disposed = false;
 
-        private readonly double W_THRESHOLD = double.Parse(ConfigurationManager.AppSettings["W_threshold"], CultureInfo.InvariantCulture);
-        private readonly double A_THRESHOLD = double.Parse(ConfigurationManager.AppSettings["A_threshold"], CultureInfo.InvariantCulture);
+        private double W_threshold;
+        private double A_threshold;
+        private double ThresholdPercentage;
+
+        private DroneSample previousSample = null;
+        private List<double> accelerationNormSamples = new List<double>();
+
+        // Events
+        public event EventHandler<TransferEventArgs> OnTransferStarted;
+        public event EventHandler<SampleEventArgs> OnSampleReceived;
+        public event EventHandler<WarningEventArgs> OnWarningRaised;
+        public event EventHandler<TransferEventArgs> OnTransferCompleted;
+
+        public DroneService()
+        {
+            LoadConfig();
+        }
+
+        ~DroneService()
+        {
+            Dispose(false);
+        }
+
+        public void LoadConfig()
+        {
+            W_threshold = double.Parse(ConfigurationManager.AppSettings["W_threshold"]);
+            A_threshold = double.Parse(ConfigurationManager.AppSettings["A_threshold"]);
+            ThresholdPercentage = double.Parse(ConfigurationManager.AppSettings["ThresholdPercentage"]);
+        }
 
         public ServiceResponse StartSession(SessionMeta meta)
         {
-            if (meta == null)
-                throw new FaultException<DataFormatFault>(new DataFormatFault("Session meta cannot be null"));
-
-            if (!IsValidMeta(meta))
+            try
             {
-                throw new FaultException<ValidationFault>(new ValidationFault("Session meta contains invalid or missing data"), new FaultReason("Invalid session meta data."));
-            }
+                sessionActive = true;
 
-            if (_sessionActive)
+                measurementsWriter = new StreamWriter("drone_measurements_session.csv");
+                rejectsWriter = new StreamWriter("drone_rejects.csv");
+
+                string header = "LinearAccelerationX,LinearAccelerationY,LinearAccelerationZ,WindSpeed,WindAngle,Time";
+                measurementsWriter.WriteLine(header);
+                rejectsWriter.WriteLine(header + ",ReasonReject");
+
+                measurementsWriter.Flush();
+                rejectsWriter.Flush();
+
+                StartTransfer();
+
+                Console.WriteLine("[INFO] Sesija je započeta");
+
+                return new ServiceResponse
+                {
+                    ServiceType = ServiceType.ACK,
+                    ServiceStatus = SessionStatus.IN_PROGRESS,
+                    Message = "Sesija je započeta"
+                };
+            }
+            catch (Exception ex)
             {
-                return new ServiceResponse { IsAck = false, Status = SessionStatus.IN_PROGRESS };
+                throw new FaultException<DataFormatFault>(
+                    new DataFormatFault
+                    {
+                        Message = "Greška pri pokretanju sesije",
+                        Details = ex.Message,
+                        Field = "Session"
+                    },
+                    new FaultReason("Greška pri pokretanju sesije")
+                );
             }
-
-            _currentMeta = meta;
-            _currentSessionSamples.Clear();
-            _sessionActive = true;
-
-            return new ServiceResponse { IsAck = true, Status = SessionStatus.IN_PROGRESS };
         }
+
+        public void StartTransfer()
+        {
+            OnTransferStarted?.Invoke(this, new TransferEventArgs("Transfer je u toku..."));
+        }
+
+        // Nova metoda za obradu i prijem uzorka
+        public void ReceiveSample(DroneSample sample)
+        {
+            OnSampleReceived?.Invoke(this, new SampleEventArgs(sample));
+
+            // --- Analitika 1: Detekcija nagle promene ubrzanja (ΔA) ---
+            // Izračunavanje norme ubrzanja (Anorm)
+            double Anorm = Math.Sqrt(
+                sample.LinearAccelerationX * sample.LinearAccelerationX +
+                sample.LinearAccelerationY * sample.LinearAccelerationY +
+                sample.LinearAccelerationZ * sample.LinearAccelerationZ);
+
+            if (previousSample != null)
+            {
+                double Aprev_norm = Math.Sqrt(
+                    previousSample.LinearAccelerationX * previousSample.LinearAccelerationX +
+                    previousSample.LinearAccelerationY * previousSample.LinearAccelerationY +
+                    previousSample.LinearAccelerationZ * previousSample.LinearAccelerationZ);
+
+                double deltaA = Anorm - Aprev_norm;
+
+                if (Math.Abs(deltaA) > A_threshold)
+                {
+                    string direction = deltaA > 0 ? "iznad očekivanog" : "ispod očekivanog";
+                    OnWarningRaised?.Invoke(this, new WarningEventArgs($"[Acceleration Spike]: ΔA={deltaA:F2}, smer: {direction}"));
+               
+                }
+            }
+
+           
+            accelerationNormSamples.Add(Anorm);
+            double Amean = accelerationNormSamples.Average();
+
+            double lowerBoundA = Amean * (1 - ThresholdPercentage / 100.0);
+            double upperBoundA = Amean * (1 + ThresholdPercentage / 100.0);
+
+            if (Anorm < lowerBoundA || Anorm > upperBoundA)
+            {
+                string direction = Anorm < lowerBoundA ? "ispod očekivane vrednosti" : "iznad očekivane vrednosti";
+                OnWarningRaised?.Invoke(this, new WarningEventArgs($"[Out Of Bound Warning]: A={Anorm:F2}, Amean={Amean:F2}, smer: {direction}"));
+            }
+
+     
+            double windAngleRad = sample.WindAngle * (Math.PI / 180.0);
+            double Weffect = Math.Abs(sample.WindSpeed * Math.Sin(windAngleRad));
+
+            if (Weffect > W_threshold)
+            {
+                string direction = Weffect > W_threshold ? "iznad očekivanog" : "ispod očekivanog"; 
+                OnWarningRaised?.Invoke(this, new WarningEventArgs($"[Wind Spike]: Weffect={Weffect:F2}, smer: {direction}"));
+                // Možeš napraviti poseban događaj OnWindSpike ako želiš    }
+
+        
+            previousSample = sample;
+
+           
+            measurementsWriter.WriteLine($"{sample.LinearAccelerationX},{sample.LinearAccelerationY},{sample.LinearAccelerationZ},{sample.WindSpeed},{sample.WindAngle},{sample.Time}");
+            measurementsWriter.Flush();
+        }
+
 
         public ServiceResponse PushSample(DroneSample sample)
         {
-            if (!_sessionActive)
+            try
             {
-                return new ServiceResponse { IsAck = false, Status = SessionStatus.COMPLETED };
-            }
+                if (!sessionActive)
+                    throw new FaultException<DataFormatFault>(
+                        new DataFormatFault { Message = "Sesija nije aktivna", Field = "Session" },
+                        new FaultReason("Sesija nije aktivna"));
 
-            if (sample == null)
-                throw new FaultException<DataFormatFault>(new DataFormatFault("Sample cannot be null"));
+                ValidateDroneSample(sample);
 
-            if (!IsValidSample(sample))
-                throw new FaultException<ValidationFault>(new ValidationFault("Sample contains invalid or missing data"));
+                Console.WriteLine("[INFO] Prenos je u toku...");
 
-            double avgAx = 0, avgAy = 0, avgAz = 0, avgW = 0;
-            int count = _currentSessionSamples.Count;
+                ReceiveSample(sample);
 
-            if (count > 0)
-            {
-                foreach (var s in _currentSessionSamples)
+                Console.WriteLine("[INFO] Zavrsen prenos...\n");
+
+                return new ServiceResponse
                 {
-                    avgAx += s.LinearAccelerationX;
-                    avgAy += s.LinearAccelerationY;
-                    avgAz += s.LinearAccelerationZ;
-                    avgW += s.WindSpeed;
-                }
-
-                avgAx /= count;
-                avgAy /= count;
-                avgAz /= count;
-                avgW /= count;
+                    ServiceType = ServiceType.ACK,
+                    ServiceStatus = SessionStatus.IN_PROGRESS,
+                    Message = "Uzorak uspešno primljen"
+                };
             }
-            else
+            catch (FaultException<ValidationFault> ex)
             {
-                avgAx = _currentMeta.LinearAccelerationX;
-                avgAy = _currentMeta.LinearAccelerationY;
-                avgAz = _currentMeta.LinearAccelerationZ;
-                avgW = _currentMeta.WindSpeed;
+                WriteRejectSample(sample, ex.Detail.Message);
+                return new ServiceResponse
+                {
+                    ServiceType = ServiceType.NACK,
+                    ServiceStatus = SessionStatus.IN_PROGRESS,
+                    Message = ex.Detail.Message
+                };
             }
-
-            bool windValid = IsWithinThreshold(sample.WindSpeed, avgW, W_THRESHOLD);
-            bool accValid =
-                IsWithinThreshold(sample.LinearAccelerationX, avgAx, A_THRESHOLD) &&
-                IsWithinThreshold(sample.LinearAccelerationY, avgAy, A_THRESHOLD) &&
-                IsWithinThreshold(sample.LinearAccelerationZ, avgAz, A_THRESHOLD);
-
-            if (windValid && accValid)
+            catch (FaultException<DataFormatFault> ex)
             {
-                _currentSessionSamples.Add(sample);
-
-                return new ServiceResponse { IsAck = true, Status = SessionStatus.IN_PROGRESS };
+                WriteRejectSample(sample, ex.Detail.Message);
+                return new ServiceResponse
+                {
+                    ServiceType = ServiceType.NACK,
+                    ServiceStatus = SessionStatus.IN_PROGRESS,
+                    Message = ex.Detail.Message
+                };
             }
-            else
+            catch (Exception ex)
             {
-                return new ServiceResponse { IsAck = false, Status = SessionStatus.IN_PROGRESS };
+                WriteRejectSample(sample, "Neočekivana greška: " + ex.Message);
+                return new ServiceResponse
+                {
+                    ServiceType = ServiceType.NACK,
+                    ServiceStatus = SessionStatus.IN_PROGRESS,
+                    Message = $"Neočekivana greška: {ex.Message}"
+                };
             }
         }
 
         public ServiceResponse EndSession()
         {
-            if (!_sessionActive)
-            {
-                return new ServiceResponse { IsAck = false, Status = SessionStatus.COMPLETED };
-            }
-
             try
             {
-                SaveSessionToDisk();
+                sessionActive = false;
+
+                measurementsWriter?.Close();
+                rejectsWriter?.Close();
+
+                CompleteTransfer();
+
+                Console.WriteLine("[INFO] Sesija je završena");
+
+                return new ServiceResponse
+                {
+                    ServiceType = ServiceType.ACK,
+                    ServiceStatus = SessionStatus.COMPLETED,
+                    Message = "Sesija je završena"
+                };
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Error saving session: " + ex.Message);
+                return new ServiceResponse
+                {
+                    ServiceType = ServiceType.NACK,
+                    ServiceStatus = SessionStatus.COMPLETED,
+                    Message = ex.Message
+                };
             }
-
-            _sessionActive = false;
-            _currentSessionSamples.Clear();
-            _currentMeta = null;
-
-            return new ServiceResponse { IsAck = true, Status = SessionStatus.COMPLETED };
         }
 
-        private bool IsValidMeta(SessionMeta meta)
+        public void CompleteTransfer()
         {
-            if (meta.WindSpeed <= 0)
-            {
-                Console.WriteLine("[DEBUG] InvalidMeta: WindSpeed <= 0");
-                return false;
-            }
-
-            if (meta.WindAngle < 0 || meta.WindAngle > 360)
-            {
-                Console.WriteLine("[DEBUG] InvalidMeta: WindAngle out of range");
-                return false;
-            }
-
-            if (!IsValidAcceleration(meta.LinearAccelerationX))
-            {
-                Console.WriteLine($"[DEBUG] InvalidMeta: AccX out of range: {meta.LinearAccelerationX}");
-                return false;
-            }
-            if (!IsValidAcceleration(meta.LinearAccelerationY))
-            {
-                Console.WriteLine($"[DEBUG] InvalidMeta: AccY out of range: {meta.LinearAccelerationY}");
-                return false;
-            }
-            if (!IsValidAcceleration(meta.LinearAccelerationZ))
-            {
-                Console.WriteLine($"[DEBUG] InvalidMeta: AccZ out of range: {meta.LinearAccelerationZ}");
-                return false;
-            }
-
-            return true;
+            OnTransferCompleted?.Invoke(this, new TransferEventArgs("Prenos završen."));
         }
 
-        private bool IsValidSample(DroneSample sample)
+        private void ValidateDroneSample(DroneSample sample)
         {
+            if (sample == null)
+                ThrowValidationAndLog(null, "Sample objekat je null");
+
+            CheckFinite("LinearAccelerationX", sample.LinearAccelerationX, sample);
+            CheckFinite("LinearAccelerationY", sample.LinearAccelerationY, sample);
+            CheckFinite("LinearAccelerationZ", sample.LinearAccelerationZ, sample);
+            CheckFinite("WindSpeed", sample.WindSpeed, sample);
+            CheckFinite("WindAngle", sample.WindAngle, sample);
+
             if (sample.WindSpeed <= 0)
-            {
-                Console.WriteLine("[DEBUG] InvalidSample: WindSpeed <= 0");
-                return false;
-            }
+                ThrowValidationAndLog(sample, "WindSpeed mora biti veći od 0");
 
             if (sample.WindAngle < 0 || sample.WindAngle > 360)
-            {
-                Console.WriteLine("[DEBUG] InvalidSample: WindAngle out of range");
-                return false;
-            }
+                ThrowValidationAndLog(sample, "WindAngle mora biti u opsegu 0-360");
 
-            if (!IsValidAcceleration(sample.LinearAccelerationX))
-            {
-                Console.WriteLine($"[DEBUG] InvalidSample: AccX out of range: {sample.LinearAccelerationX}");
-                return false;
-            }
-            if (!IsValidAcceleration(sample.LinearAccelerationY))
-            {
-                Console.WriteLine($"[DEBUG] InvalidSample: AccY out of range: {sample.LinearAccelerationY}");
-                return false;
-            }
-            if (!IsValidAcceleration(sample.LinearAccelerationZ))
-            {
-                Console.WriteLine($"[DEBUG] InvalidSample: AccZ out of range: {sample.LinearAccelerationZ}");
-                return false;
-            }
+            if (string.IsNullOrWhiteSpace(sample.Time))
+                ThrowValidationAndLog(sample, "Time nije postavljen");
 
-            return true;
+            if (!DateTime.TryParse(sample.Time, CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                ThrowValidationAndLog(sample, "Time nije validan format");
         }
 
-        private bool IsValidAcceleration(double value)
+        private void CheckFinite(string fieldName, double value, DroneSample sample)
         {
-            return value >= -10 && value <= 10;
-        }
-
-        private bool IsWithinThreshold(double value, double average, double threshold)
-        {
-            return value >= average - threshold && value <= average + threshold;
-        }
-
-        private void SaveSessionToDisk()
-        {
-            string path = ConfigurationManager.AppSettings["SessionDataPath"];
-
-            if (string.IsNullOrWhiteSpace(path))
-                path = Directory.GetCurrentDirectory();
-
-            string fileName = $"session_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
-            string filePath = Path.Combine(path, fileName);
-
-            using (StreamWriter writer = new StreamWriter(filePath))
+            if (double.IsNaN(value) || double.IsInfinity(value))
             {
-                writer.WriteLine("Time,WindSpeed,WindAngle,AccX,AccY,AccZ");
+                ThrowValidationAndLog(sample, $"{fieldName} nije validna numerička vrednost");
+            }
+        }
 
-                foreach (var sample in _currentSessionSamples)
+        private void ThrowValidationAndLog(DroneSample sample, string message)
+        {
+            WriteRejectSample(sample, message);
+            throw new FaultException<ValidationFault>(
+                new ValidationFault
                 {
-                    writer.WriteLine($"{sample.Time.TotalSeconds.ToString(CultureInfo.InvariantCulture)}," +
-                                     $"{sample.WindSpeed.ToString(CultureInfo.InvariantCulture)}," +
-                                     $"{sample.WindAngle.ToString(CultureInfo.InvariantCulture)}," +
-                                     $"{sample.LinearAccelerationX.ToString(CultureInfo.InvariantCulture)}," +
-                                     $"{sample.LinearAccelerationY.ToString(CultureInfo.InvariantCulture)}," +
-                                     $"{sample.LinearAccelerationZ.ToString(CultureInfo.InvariantCulture)}");
+                    Message = message,
+                    Field = "Sample",
+                    Value = sample
+                },
+                new FaultReason(message));
+        }
+
+        private void WriteRejectSample(DroneSample sample, string reason)
+        {
+            if (rejectsWriter == null) return;
+
+            if (sample == null)
+            {
+                rejectsWriter.WriteLine($"NULL_SAMPLE,{reason}");
+                return;
+            }
+
+            rejectsWriter.WriteLine(
+                $"{sample.LinearAccelerationX.ToString(CultureInfo.InvariantCulture)}," +
+                $"{sample.LinearAccelerationY.ToString(CultureInfo.InvariantCulture)}," +
+                $"{sample.LinearAccelerationZ.ToString(CultureInfo.InvariantCulture)}," +
+                $"{sample.WindSpeed.ToString(CultureInfo.InvariantCulture)}," +
+                $"{sample.WindAngle.ToString(CultureInfo.InvariantCulture)}," +
+                $"{sample.Time},{reason}");
+            rejectsWriter.Flush();
+
+            Console.WriteLine($"[REJECT] Sample odbačen zbog: {reason}");
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposed)
+            {
+                if (disposing)
+                {
+                    measurementsWriter?.Close();
+                    measurementsWriter?.Dispose();
+
+                    rejectsWriter?.Close();
+                    rejectsWriter?.Dispose();
                 }
+                disposed = true;
             }
         }
     }

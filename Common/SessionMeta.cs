@@ -24,11 +24,8 @@ namespace Common
         public double WindAngle { get; set; }
 
         [DataMember]
-        public TimeSpan Time { get; set; } 
+        public string Time { get; set; } 
 
-        public override string ToString()
-        {
-            return $"{Time.TotalSeconds},{WindSpeed}, {WindAngle}, {LinearAccelerationX}, {LinearAccelerationY}, {LinearAccelerationZ}";
-        }
+       
     }
 }

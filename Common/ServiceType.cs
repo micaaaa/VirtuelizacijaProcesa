@@ -7,10 +7,11 @@ using System.Threading.Tasks;
 
 namespace Common
 {
+
     [DataContract]
-    public enum SessionStatus
+    public enum ServiceType
     {
-        [EnumMember] IN_PROGRESS,
-        [EnumMember] COMPLETED
+        [EnumMember] ACK,
+        [EnumMember] NACK
     }
 }

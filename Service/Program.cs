@@ -1,30 +1,44 @@
 ﻿using System;
 using System.ServiceModel;
-using Service; 
+using Service;
 
 namespace DroneServer
 {
-    class Program
+    public class DroneServiceProgram
     {
         static void Main(string[] args)
         {
-      
-            ServiceHost host = new ServiceHost(typeof(DroneService));
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
 
+     
+            DroneService droneService = new DroneService();
+
+       
+            EventSubscriber eventSubscriber = new EventSubscriber(droneService);
+
+          
+            ServiceHost host = new ServiceHost(droneService);
+      
             try
             {
                 host.Open();
-                Console.WriteLine("DroneService is running...");
-                Console.WriteLine("Press any key to stop the service.");
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("DroneService je pokrenut na net.tcp://localhost:5000/DroneService");
+                Console.WriteLine("Pritisnite neki taster za zatvaranje servisa...");
                 Console.ReadKey();
-
-                host.Close();
-                Console.WriteLine("DroneService is stopped.");
+                Console.ResetColor();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error occurred: {ex.Message}");
-                host.Abort();
+                Console.WriteLine($"Greška pri pokretanju servisa: {ex.Message}");
+            }
+            finally
+            {
+                // Zatvori servis i odjavi evente
+                if (host.State == CommunicationState.Opened)
+                    host.Close();
+
+                eventSubscriber.CloseEvents(droneService);
             }
         }
     }

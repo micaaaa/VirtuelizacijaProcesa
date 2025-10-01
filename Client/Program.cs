@@ -1,9 +1,10 @@
 ﻿using Common;
 using System;
 using System.Collections.Generic;
-using System.Globalization;
-using System.Linq;
+using System.Configuration;
+using System.IO;
 using System.ServiceModel;
+using System.Threading;
 
 namespace Client
 {
@@ -13,191 +14,131 @@ namespace Client
         {
             try
             {
-                string csvFilePath = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "6.csv");
-
-                if (!System.IO.File.Exists(csvFilePath))
-                {
-                    Console.WriteLine($"File not found: {csvFilePath}");
-                    Console.ReadKey();
-                    return;
-                }
-
-                List<List<string>> records;
-                using (var fileHandler = new FileHandler(csvFilePath))
-                {
-                    string fileContent = fileHandler.ReadFromFile();
-                    records = ParseCsvContent(fileContent);
-                }
-
-                var invalidRows = new List<string>();
-                var validSessionMeta = new List<SessionMeta>();
-
-                foreach (var row in records)
-                {
-                    var meta = MapToSessionMeta(row);
-                    if (meta == null || meta.Time.TotalSeconds <= 0)
-                    {
-                        invalidRows.Add(string.Join(",", row));
-                    }
-                    else
-                    {
-                        validSessionMeta.Add(meta);
-                    }
-                }
-
-                if (validSessionMeta.Count == 0)
-                {
-                    Console.WriteLine("No valid session metadata found in the CSV file.");
-                    Console.ReadKey();
-                    return;
-                }
-
-                var rowsToProcess = validSessionMeta.Take(100).ToList();
-                var extraRows = validSessionMeta.Skip(100)
-                                .Select(m => $"{m.Time.TotalSeconds},{m.WindSpeed},{m.WindAngle},{m.LinearAccelerationX},{m.LinearAccelerationY},{m.LinearAccelerationZ}")
-                                .ToList();
-
-                LogInvalidAndExtraRows(invalidRows, extraRows);
-
-                var initialMeta = rowsToProcess.First();
-
-                ChannelFactory<IDroneService> factory = new ChannelFactory<IDroneService>("DroneServiceEndpoint");
+                // Inicijalizacija WCF kanala
+                ChannelFactory<IDroneService> factory = new ChannelFactory<IDroneService>("DroneService");
                 IDroneService proxy = factory.CreateChannel();
 
-                var sessionResponse = proxy.StartSession(initialMeta);
+                // Čitanje konfiguracije
+                string exeDir = AppDomain.CurrentDomain.BaseDirectory;
+                string fileName = ConfigurationManager.AppSettings["path"];
+                var filePath = Path.Combine(exeDir, fileName);
+                var maxRows = Int32.Parse(ConfigurationManager.AppSettings["maxRows"]);
 
-                if (!sessionResponse.IsAck)
+                Console.WriteLine($"Putanja do fajla: {filePath}");
+                Console.WriteLine($"Maksimalno redova za učitavanje: {maxRows}");
+
+                if (!File.Exists(filePath))
                 {
-                    Console.WriteLine($"Failed to start session. Status: {sessionResponse.Status}");
-                    Console.ReadKey();
+                    Console.WriteLine($"Fajl nije pronađen: {filePath}");
+                    WaitForExit();
                     return;
                 }
 
-                Console.WriteLine("Session started successfully!");
-
-                foreach (var sessionMeta in rowsToProcess)
+                // Čitanje uzoraka iz CSV fajla pomoću nove klase
+                List<DroneSample> samples;
+                using (var reader = new DroneReaderFromCsv(filePath))
                 {
-                    Console.WriteLine($"{sessionMeta.Time.TotalSeconds},{sessionMeta.WindSpeed},{sessionMeta.WindAngle},{sessionMeta.LinearAccelerationX},{sessionMeta.LinearAccelerationY},{sessionMeta.LinearAccelerationZ}");
+                    samples = reader.ReadSamples(maxRows);
                 }
 
-                foreach (var sessionMeta in rowsToProcess)
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"Učitano je {samples.Count} validnih redova iz CSV fajla.");
+                Console.ResetColor();
+
+                var meta = new SessionMeta();
+                Console.WriteLine("[START] Pokrenuta drone sesija!");
+
+                try
                 {
-                    var sample = MapToDroneSample(sessionMeta);
-                    if (sample != null)
+
+                    var startResponse = proxy.StartSession(meta);
+                    if (startResponse.ServiceType == ServiceType.NACK)
                     {
-                        proxy.PushSample(sample);
+                        Console.WriteLine($"NACK: {startResponse.Message}");
+                        WaitForExit();
+                        return;
                     }
                 }
+                catch (FaultException<ValidationFault> ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Validacijska greška pri pokretanju: {ex.Detail.Message}");
+                    Console.ResetColor();
+                    WaitForExit();
+                    return;
+                }
+                catch (FaultException<DataFormatFault> ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Format greška pri pokretanju: {ex.Detail.Message}");
+                    Console.WriteLine($"Detalji: {ex.Detail.Details}");
+                    Console.ResetColor();
+                    WaitForExit();
+                    return;
+                }
 
-                var endSessionResponse = proxy.EndSession();
+                // Slanje uzoraka serveru
+                int i = 0;
+                foreach (var sample in samples)
+                {
+                    try
+                    {
+                        var response = proxy.PushSample(sample);
 
-                ((IClientChannel)proxy).Close();
+                        if (response.ServiceType == ServiceType.ACK)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine($"{++i} -> Uzorak uspešno obrađen: {response.Message} (Time: {sample.Time})");
+                        }
+                        else
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine($"{++i} -> Uzorak odbijen: {response.Message} (Time: {sample.Time})");
+                        }
+                        Console.ResetColor();
+                    }
+                    catch (FaultException ex)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine($"[NEOČEKIVANA WCF GREŠKA] {i}: {ex.Message}");
+                        Console.ResetColor();
+                    }
 
-                Console.WriteLine("Press any key to exit...");
-                Console.ReadKey();
+                    Thread.Sleep(100); // simulacija vremenskog razmaka
+                }
+
+                // Zatvaranje sesije
+                var endResponse = proxy.EndSession();
+
+                if (endResponse.ServiceType == ServiceType.ACK)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine("[KRAJ] Sesija je zatvorena");
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"[GREŠKA END SESSION] {endResponse.Message}");
+                }
+                Console.ResetColor();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error: {ex.Message}");
-                Console.ReadKey();
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Nepredviđena greška: {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
+                Console.ResetColor();
+            }
+            finally
+            {
+                WaitForExit();
             }
         }
 
-        private static void LogInvalidAndExtraRows(List<string> invalidRows, List<string> extraRows)
+        private static void WaitForExit()
         {
-            string logFilePath = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "invalid_rows.log");
-
-            using (var logHandler = new FileHandler(logFilePath))
-            {
-                logHandler.DeleteAllContent();
-
-                logHandler.WriteToFile("=== Nevalidni redovi ===");
-                foreach (var line in invalidRows)
-                    logHandler.WriteToFile(line);
-
-                logHandler.WriteToFile(string.Empty);
-
-                logHandler.WriteToFile("=== Višak redovi preko 100 ===");
-                foreach (var line in extraRows)
-                    logHandler.WriteToFile(line);
-            }
-        }
-        static List<List<string>> ParseCsvContent(string content)
-        {
-            var rows = new List<List<string>>();
-            if (string.IsNullOrEmpty(content)) return rows;
-
-            var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).ToList();
-
-            if (lines.Count <= 1) return rows;
-
-            var dataLines = lines.Skip(1);
-
-            foreach (var line in dataLines)
-            {
-                var row = line.Split(',').Select(v => v.Trim()).ToList();
-                rows.Add(row);
-            }
-
-            return rows;
-        }
-
-        static SessionMeta MapToSessionMeta(List<string> row)
-        {
-            if (row.Count >= 20)
-            {
-                try
-                {
-                    if (!TryParseDouble(row[0], out double timeInSeconds) || timeInSeconds <= 0)
-                        return null;
-
-                    if (!TryParseDouble(row[1], out double windSpeed) ||
-                        !TryParseDouble(row[2], out double windAngle) ||
-                        !TryParseDouble(row[17], out double accX) ||
-                        !TryParseDouble(row[18], out double accY) ||
-                        !TryParseDouble(row[19], out double accZ))
-                        return null;
-
-                    return new SessionMeta
-                    {
-                        Time = TimeSpan.FromSeconds(timeInSeconds),
-                        WindSpeed = windSpeed,
-                        WindAngle = windAngle,
-                        LinearAccelerationX = accX,
-                        LinearAccelerationY = accY,
-                        LinearAccelerationZ = accZ
-                    };
-                }
-                catch
-                {
-                    return null;
-                }
-            }
-            return null;
-        }
-
-        static DroneSample MapToDroneSample(SessionMeta sessionMeta)
-        {
-            return new DroneSample
-            {
-                LinearAccelerationX = sessionMeta.LinearAccelerationX,
-                LinearAccelerationY = sessionMeta.LinearAccelerationY,
-                LinearAccelerationZ = sessionMeta.LinearAccelerationZ,
-                WindSpeed = sessionMeta.WindSpeed,
-                WindAngle = sessionMeta.WindAngle,
-                Time = sessionMeta.Time
-            };
-        }
-
-        static bool TryParseDouble(string s, out double result)
-        {
-            if (double.TryParse(s, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out result))
-                return true;
-            if (double.TryParse(s, System.Globalization.NumberStyles.Any, new CultureInfo("fr-FR"), out result))
-                return true;
-
-            result = 0;
-            return false;
+            Console.WriteLine("Pritisni ENTER za izlaz...");
+            Console.ReadLine();
         }
     }
 }
